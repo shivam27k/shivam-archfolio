@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { BootSplash } from "@/components/terminal/BootSplash";
 import { QuickCommandBar } from "@/components/terminal/QuickCommandBar";
 import { TerminalEntries } from "@/components/terminal/TerminalEntries";
 import { TerminalHeader } from "@/components/terminal/TerminalHeader";
@@ -8,14 +9,23 @@ import { TerminalInputRow } from "@/components/terminal/TerminalInputRow";
 import { executeCommand } from "@/lib/terminal/commands";
 import { getCompletionOptions } from "@/lib/terminal/completion";
 import { GITHUB_USERNAME, QUICK_COMMANDS, startupEntries } from "@/lib/terminal/data";
-import { getPromptPath, HOME_PATH } from "@/lib/terminal/filesystem";
+import { createInitialFsRoot, getPromptPath, HOME_PATH, VirtualNode } from "@/lib/terminal/filesystem";
 import { getLiveGithubEntries } from "@/lib/terminal/live";
 import { Entry, EntryDraft } from "@/lib/terminal/types";
+
+const BOOT_STORAGE_KEY = "archfolio_boot_seen_v1";
 
 export default function Home() {
   const [history, setHistory] = useState<Entry[]>(() => startupEntries());
   const [input, setInput] = useState("");
+  const [showBootSplash, setShowBootSplash] = useState(() => {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    return window.localStorage.getItem(BOOT_STORAGE_KEY) !== "1";
+  });
   const [cwd, setCwd] = useState(HOME_PATH);
+  const [fsRoot, setFsRoot] = useState<VirtualNode>(() => createInitialFsRoot());
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
 
@@ -37,6 +47,19 @@ export default function Home() {
       inputRef.current?.focus();
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !showBootSplash) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      window.localStorage.setItem(BOOT_STORAGE_KEY, "1");
+      setShowBootSplash(false);
+    }, 2100);
+
+    return () => window.clearTimeout(timeout);
+  }, [showBootSplash]);
 
   useEffect(() => {
     if (bodyRef.current) {
@@ -89,8 +112,8 @@ export default function Home() {
     }
   };
 
-  const runCommand = async (raw: string) => {
-    const result = executeCommand(raw, { cwd });
+  const runCommand = async (raw: string, historySnapshot: string[]) => {
+    const result = executeCommand(raw, { cwd, fsRoot, commandHistory: historySnapshot });
     if (result.clear) {
       setHistory([]);
       return;
@@ -99,10 +122,17 @@ export default function Home() {
     if (result.cwd) {
       setCwd(result.cwd);
     }
+    if (result.fsRoot) {
+      setFsRoot(result.fsRoot);
+    }
 
     appendEntries(result.entries);
 
-    if (result.action === "live") {
+    if (!result.action) {
+      return;
+    }
+
+    if (result.action.type === "live") {
       try {
         const liveEntries = await getLiveGithubEntries(GITHUB_USERNAME);
         appendEntries(liveEntries);
@@ -113,7 +143,16 @@ export default function Home() {
             : "Unable to fetch live GitHub data right now.";
         appendEntries([{ kind: "error", lines: [message] }]);
       }
+      return;
     }
+
+    if (result.action.type === "open_url") {
+      if (typeof window !== "undefined") {
+        window.open(result.action.url, "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
+
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -123,10 +162,11 @@ export default function Home() {
       return;
     }
 
-    setCommandHistory((prev) => [...prev, value]);
+    const nextCommandHistory = [...commandHistory, value];
+    setCommandHistory(nextCommandHistory);
     setHistoryIndex(null);
     completionRef.current = null;
-    void runCommand(value);
+    void runCommand(value, nextCommandHistory);
     setInput("");
   };
 
@@ -187,6 +227,16 @@ export default function Home() {
 
   return (
     <div className="terminal-page">
+      {showBootSplash ? (
+        <BootSplash
+          onSkip={() => {
+            if (typeof window !== "undefined") {
+              window.localStorage.setItem(BOOT_STORAGE_KEY, "1");
+            }
+            setShowBootSplash(false);
+          }}
+        />
+      ) : null}
       <main className="terminal-shell" onClick={() => inputRef.current?.focus()}>
         <TerminalHeader />
         <QuickCommandBar
